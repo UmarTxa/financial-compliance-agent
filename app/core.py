@@ -1,4 +1,5 @@
 import os
+import json # Add this import
 from typing import TypedDict, List
 from pydantic import BaseModel, Field
 from langchain_core.documents import Document
@@ -106,52 +107,59 @@ def data_extractor(state: FinancialAgentState, config: RunnableConfig) -> dict:
     """Uses LLM with Pydantic Tool to extract structured data from retrieved text."""
     print("--- Executing C: Data Extractor Node (Structured Output) ---")
     docs = state["retrieved_docs"]
-    
-    # Combine documents into a single context string for the LLM
     context = "\n\n".join(doc.page_content for doc in docs)
 
-    # 1. Define Extraction Prompt
+    # 1. --- NEW, STRICTER PROMPT ---
     extractor_prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are an expert financial analyst. Extract ALL required data fields from the context and use the provided tool call."),
-        ("human", f"Context to analyze:\n\n{context}\n\nExtract the requested structured financial and compliance data."),
+        ("system", """You are a silent, data-extraction robot.
+Your sole purpose is to extract data from the given context that matches the provided tool schema.
+Do NOT add any commentary, explanations, or introductory text.
+You MUST respond ONLY with the valid tool call JSON."""),
+        ("human", f"Context to analyze:\n\n{context}\n\nNow, extract the data using the 'ComplianceSummary' tool."),
     ])
+    # --- END OF NEW PROMPT ---
 
     # 2. Bind the Pydantic tool to the LLM (Forces JSON output)
     structured_extractor = extractor_prompt | llm.bind_tools(tools=[extraction_tool])
-    
+
     # 3. Invoke and Parse the Tool Call result
     try:
         result = structured_extractor.invoke({}) 
-        
-        # Extract the dictionary of arguments used for the tool call
-        extracted_data_dict = result.additional_kwargs["tool_calls"][0]["function"]["arguments"]
-        
-        # 4. Convert the dictionary back to our Pydantic model for type safety
-        # This is where type checking and validation occurs!
+
+        # 1. Get the JSON STRING from the tool call
+        tool_call_arguments_string = result.additional_kwargs["tool_calls"][0]["function"]["arguments"]
+
+        # 2. Parse the JSON STRING into a Python DICTIONARY
+        extracted_data_dict = json.loads(tool_call_arguments_string)
+
+        # 3. Convert the DICTIONARY to our Pydantic model
         structured_data = ComplianceSummary(**extracted_data_dict)
-        
+
     except Exception as e:
         print(f"ERROR in extraction: {e}")
         # If extraction fails, we return a failure message to be passed to the synthesizer
         return {"final_report": f"Extraction failed due to internal LLM error: {e}"} 
-    
+
     return {"structured_data": structured_data}
 
     # app/core.py (Continued)
 
 # D. COMPLIANCE CHECK NODE (Updates 'final_report' with findings)
 def compliance_check(state: FinancialAgentState, config: RunnableConfig) -> dict:
-    """Performs deterministic logic on the structured data and generates findings."""
+    """Performs deterministic logic on the structured data and generates compliance findings."""
     print("--- Executing D: Compliance Check (Python Logic) ---")
     
-    # --- CRITICAL FIX: Add check for missing structured_data ---
+    # --- CRITICAL GUARDRAIL FIX ---
+    # First, check if the structured_data key even exists or is None.
     if not state.get("structured_data"):
-        print("FATAL: Structured data is NULL. Cannot proceed with audit.")
-        # We update final_report with an immediate failure message
+        print("COMPLIANCE CHECK FAILED: Structured data is missing. Bypassing audit.")
+        # We must return a clear error message to the next node.
         return {"final_report": "AUDIT FAILED: The LLM could not extract structured data. Please check the document content or the model's output for parsing errors."}
-        
-    data = state["structured_data"] # Now we know 'data' is a Pydantic object
+    # --- END OF FIX ---
 
+    # If the check passes, we can safely access the data.
+    data = state["structured_data"] # We now know this is a valid Pydantic object
+    
     findings = []
     
     # 1. Auditing the PII/COI Policy (The line that previously crashed)
@@ -166,7 +174,7 @@ def compliance_check(state: FinancialAgentState, config: RunnableConfig) -> dict
     else:
          findings.append(f"AUDIT OK: Raw Revenue Text is: {data.total_revenue_text}")
         
-    # Final Finding String
+    # We temporarily update 'final_report' with these raw findings
     return {"final_report": "\n".join(findings)}
 
 # E. FINAL SYNTHESIZER NODE (Compiles the final human-readable answer)

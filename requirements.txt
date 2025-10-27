@@ -1,0 +1,22 @@
+# Core LangChain & LangGraph
+langchain
+langchain-community
+langchain-core
+langgraph
+
+# LLM & Structured Output
+langchain-groq
+pydantic
+
+# Data Processing
+pypdf
+langchain-text-splitters
+chromadb
+sentence-transformers
+
+# API & Serving
+fastapi
+uvicorn
+
+# Tracing
+langfuse
